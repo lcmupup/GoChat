@@ -1,0 +1,26 @@
+# Local development configuration for the root docker-compose.yaml.
+server:
+  port: 18080
+  pprof_port: 16060
+  ws_path: "/ws"
+  upload_dir: "./uploads"
+
+mysql:
+  host: "localhost"
+  port: 13306 # Keep this aligned with MYSQL_PORT in the root .env file.
+  user: "gochat"
+  password: "gochat123"
+  db_name: "gochat"
+
+redis:
+  addr: "localhost:16379"
+  password: ""
+  db: 0
+
+rabbitmq:
+  url: "amqp://guest:guest@localhost:5673/"
+
+jwt:
+  secret: "gochat-local-development-secret-change-before-production"
+  access_exp_hours: 2
+  refresh_exp_days: 7
