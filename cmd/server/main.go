@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"gochat/internal/api"
 	"gochat/internal/config"
+	"gochat/internal/infra"
+	"gochat/internal/repository"
+	"gochat/internal/service"
 	"log"
 
 	"github.com/gin-gonic/gin"
@@ -29,12 +32,33 @@ func main() {
 	}
 	defer logger.Sync() // 把缓冲区里的日志全部写入磁盘
 
-	r := gin.New()
-	r.Use(gin.Recovery())
+	// ── 初始化 MySQL ──
+	db, err := infra.NewMySQLPool(&cfg.MySQL)
+	if err != nil {
+		logger.Fatal("连接 MySQL 失败", zap.Error(err))
+	}
+	if err := db.Ping(); err != nil {
+		logger.Fatal("Ping MySQL 失败", zap.Error(err))
+	}
+	logger.Info("MySQL 已连接")
+
+	// ── 初始化仓库层 ──
+	mysqlRepo := repository.NewMySQLRepo(db)
+
+	// ── 初始化服务层 ──
+	authSvc := service.NewAuthService(mysqlRepo, cfg.JWT.Secret, cfg.JWT.AccessExpHours, cfg.JWT.RefreshExpDays)
+
+	// ── 初始化处理器层 ──
+	authHandler := api.NewAuthHandler(authSvc)
+
+	r := gin.Default()
 	// 健康检查
 	r.GET("/health", func(c *gin.Context) {
 		api.Success(c, gin.H{"status": "ok"})
 	})
+
+	v1 := r.Group("/api/v1")
+	authHandler.RegisterRoutes(v1)
 
 	logger.Info("服务器启动")
 	err = r.Run(fmt.Sprintf(":%d", cfg.Server.Port))
