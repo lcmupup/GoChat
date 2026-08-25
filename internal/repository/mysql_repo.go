@@ -10,6 +10,7 @@ import (
 // MySQLRepo 定义了服务和消费者所需的所有 MySQL CRUD 操作。
 type MySQLRepo interface {
 	// 用户
+	GetUserByID(ctx context.Context, userID int64) (*model.User, error)
 	GetUserByUsername(ctx context.Context, username string) (*model.User, error)
 	CreateUser(ctx context.Context, user *model.User) error
 }
@@ -21,6 +22,21 @@ type MySQLRepoImpl struct {
 
 func NewMySQLRepo(db *sql.DB) *MySQLRepoImpl {
 	return &MySQLRepoImpl{db}
+}
+
+func (m *MySQLRepoImpl) GetUserByID(ctx context.Context, userID int64) (*model.User, error) {
+	query := `SELECT id, username, password_hash, nickname, avatar_url, sign, gender, created_at, updated_at
+	          FROM users WHERE id = ?`
+	row := m.db.QueryRowContext(ctx, query, userID)
+	var u model.User
+	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Nickname, &u.AvatarURL, &u.Sign, &u.Gender, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("按ID获取用户: %w", err)
+	}
+	return &u, nil
 }
 
 func (m *MySQLRepoImpl) GetUserByUsername(ctx context.Context, username string) (*model.User, error) {

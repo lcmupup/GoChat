@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"gochat/internal/middleware"
 	"gochat/internal/model"
 	"gochat/internal/repository"
 
@@ -78,4 +79,69 @@ func (s *AuthService) Register(ctx context.Context, username, password string) (
 	}
 
 	return user.ID, user.Username, nil
+}
+
+// Login 用户登录并返回 JWT 令牌。
+// 返回 accessToken、refreshToken、expiresIn（秒）、error。
+// refreshToken到期了用户必须手动重新登录获取新的refreshToken
+func (s *AuthService) Login(ctx context.Context, username, password string) (string, string, int64, error) {
+	user, err := s.repo.GetUserByUsername(ctx, username)
+	if err != nil { // 查找用户失败
+		return "", "", 0, fmt.Errorf("查找用户: %w", err)
+	}
+	if user == nil { // 未查找到该用户
+		return "", "", 0, fmt.Errorf(ErrUserNotFound)
+	}
+
+	// 验证密码
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+		return "", "", 0, fmt.Errorf(ErrWrongPassword)
+	}
+
+	return s.issueTokens(user)
+}
+
+func (s *AuthService) GetUserByUsername(ctx context.Context, username string) (*model.User, error) {
+	return s.repo.GetUserByUsername(ctx, username)
+}
+
+// GetUserByID 返回指定用户资料，供受保护的账户接口使用。
+func (s *AuthService) GetUserByID(ctx context.Context, userID int64) (*model.User, error) {
+	return s.repo.GetUserByID(ctx, userID)
+}
+
+// Refresh 验证刷新令牌并颁发新的访问令牌。
+// 返回 accessToken、expiresIn（秒）、error。
+func (s *AuthService) Refresh(ctx context.Context, refreshToken string) (string, int64, error) {
+	// 先解析令牌拿到令牌携带的"载荷"字段
+	_, claims, err := middleware.ParseToken(refreshToken, s.jwtSecret)
+	if err != nil {
+		return "", 0, fmt.Errorf(ErrInvalidToken)
+	}
+
+	// 验证用户是否仍然存在
+	user, err := s.repo.GetUserByID(ctx, claims.UserID)
+	if err != nil {
+		return "", 0, fmt.Errorf("查找用户: %w", err)
+	}
+	if user == nil {
+		return "", 0, fmt.Errorf(ErrUserNotFound)
+	}
+
+	accessToken, _, expiresIn, err := s.issueTokens(user)
+	return accessToken, expiresIn, err
+}
+
+// issueTokens 给登录的用户分配JWT令牌
+// 返回的是access和refresh的token以及access token的有效期秒数
+func (s *AuthService) issueTokens(user *model.User) (string, string, int64, error) {
+	accessToken, err := middleware.GenerateAccessToken(user.ID, user.Username, s.jwtSecret, s.accessExpHours)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("生成访问令牌: %w", err)
+	}
+	refreshToken, err := middleware.GenerateRefreshToken(user.ID, s.jwtSecret, s.refreshExpDays)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("生成刷新令牌: %w", err)
+	}
+	return accessToken, refreshToken, int64(s.accessExpHours * 3600), nil
 }
