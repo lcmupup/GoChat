@@ -13,6 +13,7 @@ type MySQLRepo interface {
 	GetUserByID(ctx context.Context, userID int64) (*model.User, error)
 	GetUserByUsername(ctx context.Context, username string) (*model.User, error)
 	CreateUser(ctx context.Context, user *model.User) error
+	UpdateUser(ctx context.Context, user *model.User) error
 }
 
 // MySQLRepoImpl — 基于 database/sql 的具体实现
@@ -24,6 +25,7 @@ func NewMySQLRepo(db *sql.DB) *MySQLRepoImpl {
 	return &MySQLRepoImpl{db}
 }
 
+// 用户
 func (m *MySQLRepoImpl) GetUserByID(ctx context.Context, userID int64) (*model.User, error) {
 	query := `SELECT id, username, password_hash, nickname, avatar_url, sign, gender, created_at, updated_at
 	          FROM users WHERE id = ?`
@@ -73,5 +75,14 @@ func (m *MySQLRepoImpl) CreateUser(ctx context.Context, user *model.User) error 
 		return fmt.Errorf("创建用户 获取最后插入ID: %w", err)
 	}
 	user.ID = id // 将获取到的id写入到传来的结构体中
+	return nil
+}
+
+func (m *MySQLRepoImpl) UpdateUser(ctx context.Context, user *model.User) error {
+	query := `UPDATE users SET username=?, password_hash=?, nickname=?, avatar_url=?, sign=?, gender=? WHERE id=?`
+	_, err := m.db.ExecContext(ctx, query, user.Username, user.PasswordHash, user.Nickname, user.AvatarURL, user.Sign, user.Gender, user.ID)
+	if err != nil {
+		return fmt.Errorf("更新用户: %w", err)
+	}
 	return nil
 }

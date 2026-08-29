@@ -81,6 +81,14 @@ func SuccessCreated(c *gin.Context, data interface{}) {
 	})
 }
 
+// SuccessMessage 返回 code=0 的成功响应，仅含提示消息，无 data。
+func SuccessMessage(c *gin.Context, message string) {
+	c.JSON(http.StatusOK, ApiResponse{
+		Code:    CodeSuccess,
+		Message: message,
+	})
+}
+
 // Error 返回自定义错误码和消息的失败响应。
 func Error(c *gin.Context, httpStatus int, code int, message string) {
 	c.JSON(httpStatus, ApiResponse{

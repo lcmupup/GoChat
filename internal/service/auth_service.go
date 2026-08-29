@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"gochat/internal/middleware"
 	"gochat/internal/model"
 	"gochat/internal/repository"
 
+	"github.com/go-sql-driver/mysql"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -108,6 +110,81 @@ func (s *AuthService) GetUserByUsername(ctx context.Context, username string) (*
 // GetUserByID 返回指定用户资料，供受保护的账户接口使用。
 func (s *AuthService) GetUserByID(ctx context.Context, userID int64) (*model.User, error) {
 	return s.repo.GetUserByID(ctx, userID)
+}
+
+// UpdateUsername 修改当前用户的用户名，并签发包含新用户名的令牌。
+// users.username 的唯一索引是并发修改时的最终保障。
+func (s *AuthService) UpdateUsername(ctx context.Context, userID int64, username string) (string, string, int64, error) {
+	if len(username) < 3 || len(username) > 50 {
+		return "", "", 0, fmt.Errorf(ErrUsernameTooShort)
+	}
+
+	// 查发起改名的人是谁
+	user, err := s.repo.GetUserByID(ctx, userID)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("查找用户: %w", err)
+	}
+	if user == nil {
+		return "", "", 0, fmt.Errorf(ErrUserNotFound)
+	}
+
+	// 查新的用户名被谁占着
+	existing, err := s.repo.GetUserByUsername(ctx, username)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("检查用户名: %w", err)
+	}
+	if existing != nil && existing.ID != userID { // 当前用户名已被占用且占用者不是本人
+		return "", "", 0, fmt.Errorf(ErrUsernameTaken)
+	}
+
+	// 如果用户从没改过昵称，就把昵称变为新的用户名
+	oldUsername := user.Username
+	user.Username = username
+	if user.Nickname == oldUsername {
+		user.Nickname = username
+	}
+	// 检查在仓库层执行update期间，有没有别的进程把这个用户名占用了
+	if err := s.repo.UpdateUser(ctx, user); err != nil {
+		var mysqlErr *mysql.MySQLError
+		if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+			return "", "", 0, fmt.Errorf(ErrUsernameTaken)
+		}
+		return "", "", 0, fmt.Errorf("更新用户名: %w", err)
+	}
+
+	return s.issueTokens(user)
+}
+
+// UpdatePassword 校验当前密码后，以 bcrypt 哈希替换为新密码。
+func (s *AuthService) UpdatePassword(ctx context.Context, userID int64, currentPassword, newPassword string) error {
+	if len(newPassword) < 6 {
+		return fmt.Errorf(ErrPasswordTooShort)
+	}
+
+	// 根据用户id找到对应的用户
+	user, err := s.repo.GetUserByID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("查找用户: %w", err)
+	}
+	if user == nil {
+		return fmt.Errorf(ErrUserNotFound)
+	}
+
+	// 验证当前密码是否正确
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(currentPassword)); err != nil {
+		return fmt.Errorf(ErrWrongPassword)
+	}
+
+	// 将新密码转为哈希值
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), s.bcryptCost)
+	if err != nil {
+		return fmt.Errorf("哈希密码: %w", err)
+	}
+	user.PasswordHash = string(hash)
+	if err := s.repo.UpdateUser(ctx, user); err != nil {
+		return fmt.Errorf("更新密码: %w", err)
+	}
+	return nil
 }
 
 // Refresh 验证刷新令牌并颁发新的访问令牌。

@@ -6,6 +6,7 @@ import (
 	"gochat/internal/api"
 	"gochat/internal/config"
 	"gochat/internal/infra"
+	"gochat/internal/middleware"
 	"gochat/internal/repository"
 	"gochat/internal/service"
 	"log"
@@ -57,8 +58,14 @@ func main() {
 		api.Success(c, gin.H{"status": "ok"})
 	})
 
-	v1 := r.Group("/api/v1")
-	authHandler.RegisterRoutes(v1)
+	// ── 公开路由（无需认证）──
+	public := r.Group("/api/v1")
+	authHandler.RegisterRoutes(public)
+
+	// ── 受保护路由（需要 JWT 认证）──
+	protected := r.Group("/api/v1")
+	protected.Use(middleware.JWTAuthMiddleware(cfg.JWT.Secret))
+	authHandler.RegisterAccountRoutes(protected)
 
 	logger.Info("服务器启动")
 	err = r.Run(fmt.Sprintf(":%d", cfg.Server.Port))
