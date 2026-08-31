@@ -32,6 +32,15 @@ const (
 	CodeUserNotFound     = 1104
 	CodeWrongPassword    = 1105
 	CodeInvalidToken     = 1106
+
+	// ── 好友 1200~1299 ──
+	CodeSelfRequest      = 1201
+	CodeAlreadyFriends   = 1202
+	CodeFriendBlocked    = 1203
+	CodeDuplicateRequest = 1204
+	CodeRequestNotFound  = 1205
+	CodeNotRequestTarget = 1206
+	CodeAlreadyBlocked   = 1207
 )
 
 // ──────────────────────────────────────────────────────
@@ -48,6 +57,15 @@ var errorCodeMap = map[string]int{
 	"用户未找到":         CodeUserNotFound,
 	"密码错误":          CodeWrongPassword,
 	"刷新令牌无效或已过期":    CodeInvalidToken,
+
+	// 好友
+	"不能给自己发送好友请求":     CodeSelfRequest,
+	"已经是该用户的好友":       CodeAlreadyFriends,
+	"你已拉黑该用户或已被该用户拉黑": CodeFriendBlocked,
+	"已存在待处理的好友请求":     CodeDuplicateRequest,
+	"好友请求未找到":         CodeRequestNotFound,
+	"你不是该好友请求的接收者":    CodeNotRequestTarget,
+	"你已经拉黑了该用户":       CodeAlreadyBlocked,
 }
 
 // MapErrorCode 将 service 层返回的 error 字符串映射为前端错误码。
@@ -104,5 +122,41 @@ func ServiceError(c *gin.Context, httpStatus int, errMsg string) {
 	c.JSON(httpStatus, ApiResponse{
 		Code:    MapErrorCode(errMsg),
 		Message: errMsg,
+	})
+}
+
+// ──────────────────────────────────────────────────────
+// 分页
+// ──────────────────────────────────────────────────────
+
+// PaginationMeta 是分页列表响应的元数据。
+type PaginationMeta struct {
+	Total   int64 `json:"total"`    // 总共多少条记录
+	Offset  int   `json:"offset"`   // 这页从哪开始
+	Limit   int   `json:"limit"`    // 一页多大
+	HasMore bool  `json:"has_more"` // 还有没有下一页
+}
+
+// PaginatedData 是带分页信息的数据载荷。
+type PaginatedData struct {
+	Items      interface{}    `json:"items"`
+	Pagination PaginationMeta `json:"pagination"`
+}
+
+// PaginatedSuccess 返回 code=0 的分页列表响应。
+func PaginatedSuccess(c *gin.Context, items interface{}, total int64, offset, limit int) {
+	hasMore := int64(offset+limit) < total
+	c.JSON(http.StatusOK, ApiResponse{
+		Code:    CodeSuccess,
+		Message: "ok",
+		Data: PaginatedData{
+			Items: items,
+			Pagination: PaginationMeta{
+				Total:   total,
+				Offset:  offset,
+				Limit:   limit,
+				HasMore: hasMore,
+			},
+		},
 	})
 }

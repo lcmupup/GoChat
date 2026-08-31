@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"gochat/internal/api"
@@ -42,6 +43,16 @@ func main() {
 		logger.Fatal("Ping MySQL 失败", zap.Error(err))
 	}
 	logger.Info("MySQL 已连接")
+
+	// ── 初始化 Redis ──
+	rdb, err := infra.NewRedisClient(&cfg.Redis)
+	if err != nil {
+		logger.Fatal("连接 Redis 失败", zap.Error(err))
+	}
+	if err := rdb.Ping(context.Background()).Err(); err != nil {
+		logger.Fatal("Ping Redis 失败", zap.Error(err))
+	}
+	logger.Info("Redis 已连接")
 
 	// ── 初始化仓库层 ──
 	mysqlRepo := repository.NewMySQLRepo(db)
