@@ -14,6 +14,15 @@ type MySQLRepo interface {
 	GetUserByUsername(ctx context.Context, username string) (*model.User, error)
 	CreateUser(ctx context.Context, user *model.User) error
 	UpdateUser(ctx context.Context, user *model.User) error
+
+	// ── 好友 ──
+	CreateFriendRequest(ctx context.Context, req *model.FriendRequest) error
+	UpdateFriendRequest(ctx context.Context, req *model.FriendRequest) error
+	GetFriendRequestByID(ctx context.Context, id int64) (*model.FriendRequest, error)
+	GetFriendRequestsByUser(ctx context.Context, userID int64) ([]model.FriendRequest, error)
+	CreateFriendship(ctx context.Context, fs *model.Friendship) error
+	IsFriend(ctx context.Context, userID, friendID int64) (bool, error)
+	IsBlocked(ctx context.Context, userID, blockedID int64) (bool, error)
 }
 
 // MySQLRepoImpl — 基于 database/sql 的具体实现
@@ -85,4 +94,124 @@ func (m *MySQLRepoImpl) UpdateUser(ctx context.Context, user *model.User) error 
 		return fmt.Errorf("更新用户: %w", err)
 	}
 	return nil
+}
+
+// ── 好友 ──
+
+func (m *MySQLRepoImpl) CreateFriendRequest(ctx context.Context, req *model.FriendRequest) error {
+	query := `INSERT INTO friend_requests (from_user_id, to_user_id, message, status)
+	          VALUES (?, ?, ?, ?)
+	          ON DUPLICATE KEY UPDATE
+	              id = LAST_INSERT_ID(id),
+	              message = IF(status = 0, message, VALUES(message)),
+	              created_at = IF(status = 0, created_at, NOW()),
+	              updated_at = IF(status = 0, updated_at, NOW()),
+	              status = IF(status = 0, status, VALUES(status))`
+	result, err := m.db.ExecContext(ctx, query,
+		req.FromUserID,
+		req.ToUserID,
+		req.Message,
+		req.Status,
+	)
+	if err != nil {
+		return fmt.Errorf("插入 friend_requests: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("插入 friend_requests 获取最后插入ID: %w", err)
+	}
+	req.ID = id
+	return nil
+}
+
+// 处理好友请求：拒绝/同意好友请求
+func (m *MySQLRepoImpl) UpdateFriendRequest(ctx context.Context, req *model.FriendRequest) error {
+	query := `UPDATE friend_requests SET status=?, updated_at=NOW() WHERE id=?`
+	_, err := m.db.ExecContext(ctx, query, req.Status, req.ID)
+	if err != nil {
+		return fmt.Errorf("更新 friend_requests: %w", err)
+	}
+	return nil
+}
+
+// 根据请求id获取好友请求
+func (m *MySQLRepoImpl) GetFriendRequestByID(ctx context.Context, id int64) (*model.FriendRequest, error) {
+	query := `SELECT id, from_user_id, to_user_id, message, status, created_at, updated_at
+	          FROM friend_requests WHERE id = ?`
+	row := m.db.QueryRowContext(ctx, query, id)
+	var r model.FriendRequest
+	err := row.Scan(&r.ID, &r.FromUserID, &r.ToUserID, &r.Message, &r.Status, &r.CreatedAt, &r.UpdatedAt)
+	if err != nil {
+		if err == sql.ErrNoRows { // 没找到这个请求id的好友请求
+			return nil, nil
+		}
+		// Scan方法失败了
+		return nil, fmt.Errorf("按ID获取好友请求: %w", err)
+	}
+	return &r, nil
+}
+
+// 根据用户id获取好友请求
+func (m *MySQLRepoImpl) GetFriendRequestsByUser(ctx context.Context, userID int64) ([]model.FriendRequest, error) {
+	query := `SELECT id, from_user_id, to_user_id, message, status, created_at, updated_at
+	          FROM friend_requests
+	          WHERE to_user_id = ? AND status = 0
+	          ORDER BY created_at DESC`
+	rows, err := m.db.QueryContext(ctx, query, userID)
+	if err != nil {
+		return nil, fmt.Errorf("按用户获取好友请求: %w", err)
+	}
+	defer rows.Close()
+
+	var results []model.FriendRequest
+	for rows.Next() {
+		var r model.FriendRequest
+		if err := rows.Scan(&r.ID, &r.FromUserID, &r.ToUserID, &r.Message, &r.Status, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("扫描好友请求: %w", err)
+		}
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历好友请求: %w", err)
+	}
+	return results, nil
+}
+
+// 建立好友关系
+func (m *MySQLRepoImpl) CreateFriendship(ctx context.Context, fs *model.Friendship) error {
+	// 插入双向记录：user->friend 和 friend->user
+	query := `INSERT INTO friendships (user_id, friend_id) VALUES (?, ?)`
+	// 插入user->friend
+	_, err := m.db.ExecContext(ctx, query, fs.UserID, fs.FriendID)
+	if err != nil {
+		return fmt.Errorf("插入好友关系 user->friend: %w", err)
+	}
+	// 插入friend->user
+	_, err = m.db.ExecContext(ctx, query, fs.FriendID, fs.UserID)
+	if err != nil {
+		return fmt.Errorf("插入好友关系 friend->user: %w", err)
+	}
+	return nil
+}
+
+// 判断两人是否是朋友关系
+func (m *MySQLRepoImpl) IsFriend(ctx context.Context, userID, friendID int64) (bool, error) {
+	query := `SELECT COUNT(*) FROM friendships WHERE user_id = ? AND friend_id = ?`
+	var count int
+	err := m.db.QueryRowContext(ctx, query, userID, friendID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("检查是否为好友: %w", err)
+	}
+	return count > 0, nil
+}
+
+// 判断是否拉黑了对方或被对方拉黑
+func (m *MySQLRepoImpl) IsBlocked(ctx context.Context, userID, blockedID int64) (bool, error) {
+	query := `SELECT COUNT(*) FROM blacklist WHERE user_id = ? AND blocked_id = ?`
+	var count int
+	err := m.db.QueryRowContext(ctx, query, userID, blockedID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("检查是否已拉黑: %w", err)
+	}
+	return count > 0, nil
 }

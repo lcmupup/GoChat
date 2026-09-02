@@ -56,12 +56,15 @@ func main() {
 
 	// ── 初始化仓库层 ──
 	mysqlRepo := repository.NewMySQLRepo(db)
+	redisRepo := repository.NewRedisRepo(rdb)
 
 	// ── 初始化服务层 ──
 	authSvc := service.NewAuthService(mysqlRepo, cfg.JWT.Secret, cfg.JWT.AccessExpHours, cfg.JWT.RefreshExpDays)
+	friendSvc := service.NewFriendService(mysqlRepo, redisRepo, logger)
 
 	// ── 初始化处理器层 ──
 	authHandler := api.NewAuthHandler(authSvc)
+	friendHandler := api.NewFriendHandler(friendSvc, rdb)
 
 	r := gin.Default()
 	// 健康检查
@@ -77,6 +80,7 @@ func main() {
 	protected := r.Group("/api/v1")
 	protected.Use(middleware.JWTAuthMiddleware(cfg.JWT.Secret))
 	authHandler.RegisterAccountRoutes(protected)
+	friendHandler.RegisterRoutes(protected)
 
 	logger.Info("服务器启动")
 	err = r.Run(fmt.Sprintf(":%d", cfg.Server.Port))
