@@ -48,11 +48,11 @@ type rejectFriendRequestReq struct {
 }
 
 type blockUserReq struct {
-	BlockedID int64 `json:"blocked_id" binding:"required"`
+	BlockedID int64 `json:"blocked_id" binding:"required"` // 要拉黑的好友id
 }
 
 type unblockUserReq struct {
-	BlockedID int64 `json:"blocked_id" binding:"required"`
+	BlockedID int64 `json:"blocked_id" binding:"required"` // 要接触拉黑的好友id
 }
 
 // ── 处理器 ──
@@ -231,6 +231,161 @@ func (h *FriendHandler) GetFriendRequests(c *gin.Context) {
 	PaginatedSuccess(c, paged, total, offset, limit)
 }
 
+// GetFriendList godoc
+// @Summary      获取好友列表
+// @Description  获取当前用户的好友列表
+// @Tags         好友
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Success      200   {object}  ApiResponse{data=object}  "获取成功"
+// @Failure      500   {object}  ApiResponse  "服务器内部错误"
+// @Router       /friend/list [get]
+// GetFriendList handles GET /friend/list.
+func (h *FriendHandler) GetFriendList(c *gin.Context) {
+	userID := c.GetInt64("userID")
+
+	limit := 20
+	offset := 0
+	if l, err := strconv.Atoi(c.DefaultQuery("limit", "20")); err == nil && l > 0 && l <= 100 {
+		limit = l
+	}
+	if o, err := strconv.Atoi(c.DefaultQuery("offset", "0")); err == nil && o >= 0 {
+		offset = o
+	}
+
+	friends, err := h.friendSvc.GetFriendList(c.Request.Context(), userID)
+	if err != nil {
+		Error(c, http.StatusInternalServerError, CodeInternalError, "internal error")
+		return
+	}
+
+	total := int64(len(friends))
+
+	// Apply offset/limit slicing
+	if offset > len(friends) {
+		offset = len(friends)
+	}
+	end := offset + limit
+	if end > len(friends) {
+		end = len(friends)
+	}
+	paged := friends[offset:end]
+	for index := range paged {
+		friend, err := h.friendSvc.GetUserByID(c.Request.Context(), paged[index].FriendID)
+		if err == nil && friend != nil {
+			paged[index].Nickname = friend.Username
+			paged[index].AvatarURL = friend.AvatarURL
+		}
+		if h.rdb != nil {
+			online, err := h.rdb.Exists(c.Request.Context(), "online:"+strconv.FormatInt(paged[index].FriendID, 10)).Result()
+			if err == nil {
+				paged[index].Online = online == 1
+			}
+		}
+	}
+
+	PaginatedSuccess(c, paged, total, offset, limit)
+}
+
+// DeleteFriend godoc
+// @Summary      删除好友
+// @Description  删除指定ID的好友关系
+// @Tags         好友
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        friendID  path  int64  true  "好友ID"
+// @Success      200       {object}  ApiResponse  "删除成功"
+// @Failure      400       {object}  ApiResponse  "参数错误"
+// @Failure      500       {object}  ApiResponse  "服务器内部错误"
+// @Router       /friend/{friendID} [delete]
+// DeleteFriend handles DELETE /friend/:friendID.
+func (h *FriendHandler) DeleteFriend(c *gin.Context) {
+	userID := c.GetInt64("userID")
+
+	friendIDStr := c.Param("friendID")
+	friendID, err := strconv.ParseInt(friendIDStr, 10, 64) // 将好友id字符串转化为64位的10进制整数
+	if err != nil {
+		Error(c, http.StatusBadRequest, CodeInvalidParam, "invalid friendID")
+		return
+	}
+
+	err = h.friendSvc.DeleteFriend(c.Request.Context(), userID, friendID)
+	if err != nil {
+		Error(c, http.StatusInternalServerError, CodeInternalError, "internal error")
+		return
+	}
+
+	SuccessMessage(c, "friend deleted")
+}
+
+// BlockUser godoc
+// @Summary      拉黑用户
+// @Description  将指定用户加入黑名单
+// @Tags         好友
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        body  body  blockUserReq  true  "拉黑信息"
+// @Success      200   {object}  ApiResponse  "拉黑成功"
+// @Failure      400   {object}  ApiResponse  "参数错误"
+// @Failure      409   {object}  ApiResponse  "已拉黑"
+// @Router       /friend/block [post]
+// BlockUser handles POST /friend/block.
+func (h *FriendHandler) BlockUser(c *gin.Context) {
+	userID := c.GetInt64("userID")
+
+	var req blockUserReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Error(c, http.StatusBadRequest, CodeMissingParam, "blocked_id is required")
+		return
+	}
+
+	err := h.friendSvc.BlockUser(c.Request.Context(), userID, req.BlockedID)
+	if err != nil {
+		switch err.Error() {
+		case service.ErrAlreadyBlocked:
+			ServiceError(c, http.StatusConflict, err.Error())
+		default:
+			Error(c, http.StatusInternalServerError, CodeInternalError, "internal error")
+		}
+		return
+	}
+
+	SuccessMessage(c, "user blocked")
+}
+
+// UnblockUser godoc
+// @Summary      取消拉黑
+// @Description  将指定用户从黑名单中移除
+// @Tags         好友
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        body  body  unblockUserReq  true  "取消拉黑信息"
+// @Success      200   {object}  ApiResponse  "取消拉黑成功"
+// @Failure      400   {object}  ApiResponse  "参数错误"
+// @Router       /friend/unblock [post]
+// UnblockUser handles POST /friend/unblock.
+func (h *FriendHandler) UnblockUser(c *gin.Context) {
+	userID := c.GetInt64("userID")
+
+	var req unblockUserReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Error(c, http.StatusBadRequest, CodeMissingParam, "blocked_id is required")
+		return
+	}
+
+	err := h.friendSvc.UnblockUser(c.Request.Context(), userID, req.BlockedID)
+	if err != nil {
+		Error(c, http.StatusInternalServerError, CodeInternalError, "internal error")
+		return
+	}
+
+	SuccessMessage(c, "user unblocked")
+}
+
 // RegisterRoutes registers all friend HTTP routes on the given Gin router group.
 func (h *FriendHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	friend := rg.Group("/friend")
@@ -238,4 +393,8 @@ func (h *FriendHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	friend.POST("/accept", h.AcceptFriendRequest)
 	friend.POST("/reject", h.RejectFriendRequest)
 	friend.GET("/requests", h.GetFriendRequests)
+	friend.GET("/list", h.GetFriendList)
+	friend.DELETE("/:friendID", h.DeleteFriend)
+	friend.POST("/block", h.BlockUser)
+	friend.POST("/unblock", h.UnblockUser)
 }

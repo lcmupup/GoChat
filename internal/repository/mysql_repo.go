@@ -21,7 +21,11 @@ type MySQLRepo interface {
 	GetFriendRequestByID(ctx context.Context, id int64) (*model.FriendRequest, error)
 	GetFriendRequestsByUser(ctx context.Context, userID int64) ([]model.FriendRequest, error)
 	CreateFriendship(ctx context.Context, fs *model.Friendship) error
+	DeleteFriendship(ctx context.Context, userID, friendID int64) error
+	GetFriendList(ctx context.Context, userID int64) ([]model.Friendship, error)
 	IsFriend(ctx context.Context, userID, friendID int64) (bool, error)
+	CreateBlacklist(ctx context.Context, bl *model.Blacklist) error
+	DeleteBlacklist(ctx context.Context, userID, blockedID int64) error
 	IsBlocked(ctx context.Context, userID, blockedID int64) (bool, error)
 }
 
@@ -194,6 +198,42 @@ func (m *MySQLRepoImpl) CreateFriendship(ctx context.Context, fs *model.Friendsh
 	return nil
 }
 
+// 删除好友关系
+func (m *MySQLRepoImpl) DeleteFriendship(ctx context.Context, userID, friendID int64) error {
+	// 删除双向记录：user->friend 和 friend->user
+	query := `DELETE FROM friendships WHERE (user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)`
+	_, err := m.db.ExecContext(ctx, query, userID, friendID, friendID, userID)
+	if err != nil {
+		return fmt.Errorf("删除好友关系: %w", err)
+	}
+	return nil
+}
+
+// 获取好友列表
+func (m *MySQLRepoImpl) GetFriendList(ctx context.Context, userID int64) ([]model.Friendship, error) {
+	query := `SELECT f.id, f.user_id, f.friend_id, f.created_at
+	          FROM friendships f
+	          WHERE f.user_id = ?`
+	rows, err := m.db.QueryContext(ctx, query, userID)
+	if err != nil {
+		return nil, fmt.Errorf("获取好友列表: %w", err)
+	}
+	defer rows.Close()
+
+	var results []model.Friendship
+	for rows.Next() {
+		var fs model.Friendship
+		if err := rows.Scan(&fs.ID, &fs.UserID, &fs.FriendID, &fs.CreatedAt); err != nil {
+			return nil, fmt.Errorf("扫描好友关系: %w", err)
+		}
+		results = append(results, fs)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历好友关系: %w", err)
+	}
+	return results, nil
+}
+
 // 判断两人是否是朋友关系
 func (m *MySQLRepoImpl) IsFriend(ctx context.Context, userID, friendID int64) (bool, error) {
 	query := `SELECT COUNT(*) FROM friendships WHERE user_id = ? AND friend_id = ?`
@@ -203,6 +243,31 @@ func (m *MySQLRepoImpl) IsFriend(ctx context.Context, userID, friendID int64) (b
 		return false, fmt.Errorf("检查是否为好友: %w", err)
 	}
 	return count > 0, nil
+}
+
+// 创建一条拉黑记录
+func (m *MySQLRepoImpl) CreateBlacklist(ctx context.Context, bl *model.Blacklist) error {
+	query := `INSERT INTO blacklist (user_id, blocked_id) VALUES (?, ?)`
+	result, err := m.db.ExecContext(ctx, query, bl.UserID, bl.BlockedID)
+	if err != nil {
+		return fmt.Errorf("插入黑名单: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("插入黑名单 获取最后插入ID: %w", err)
+	}
+	bl.ID = id
+	return nil
+}
+
+// 删除一条拉黑记录
+func (m *MySQLRepoImpl) DeleteBlacklist(ctx context.Context, userID, blockedID int64) error {
+	query := `DELETE FROM blacklist WHERE user_id = ? AND blocked_id = ?`
+	_, err := m.db.ExecContext(ctx, query, userID, blockedID)
+	if err != nil {
+		return fmt.Errorf("删除黑名单: %w", err)
+	}
+	return nil
 }
 
 // 判断是否拉黑了对方或被对方拉黑

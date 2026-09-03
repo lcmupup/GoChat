@@ -40,3 +40,15 @@ func (r *RedisRepoImpl) SetFriendCache(ctx context.Context, uidA, uidB int64) er
 	}
 	return nil
 }
+
+// DeleteFriendCache 移除用于私信 Lua 授权检查的双向好友关系键
+// 这个方法没有加到 RedisRepo 接口中
+func (r *RedisRepoImpl) DeleteFriendCache(ctx context.Context, uidA, uidB int64) error {
+	if err := r.rdb.Del(ctx,
+		fmt.Sprintf("friend:%d:%d", uidA, uidB),
+		fmt.Sprintf("friend:%d:%d", uidB, uidA),
+	).Err(); err != nil {
+		return fmt.Errorf("删除好友缓存 %d<->%d: %w", uidA, uidB, err)
+	}
+	return nil
+}

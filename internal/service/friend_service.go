@@ -28,6 +28,10 @@ type FriendService struct {
 	logger    *zap.Logger
 }
 
+type friendCacheRemover interface {
+	DeleteFriendCache(ctx context.Context, uidA, uidB int64) error
+}
+
 // NewFriendService 创建一个包含所有必要依赖的 FriendService。
 func NewFriendService(mysqlRepo repository.MySQLRepo, redisRepo repository.RedisRepo, logger *zap.Logger) *FriendService {
 	return &FriendService{
@@ -35,6 +39,10 @@ func NewFriendService(mysqlRepo repository.MySQLRepo, redisRepo repository.Redis
 		redisRepo: redisRepo,
 		logger:    logger,
 	}
+}
+
+func (s *FriendService) GetUserByID(ctx context.Context, userID int64) (*model.User, error) {
+	return s.mysqlRepo.GetUserByID(ctx, userID)
 }
 
 // SendFriendRequest 创建好友请求，并进行以下验证：
@@ -253,4 +261,113 @@ func (s *FriendService) GetFriendRequestList(ctx context.Context, userID int64) 
 		})
 	}
 	return items, nil
+}
+
+// FriendListItem 使用用户个人资料数据丰富 Friendship 信息。
+type FriendListItem struct {
+	model.Friendship
+	Nickname  string `json:"nickname"`
+	AvatarURL string `json:"avatar_url"`
+	IsBlocked bool   `json:"is_blocked"`
+}
+
+// GetFriendList 返回用户的好友列表，包含昵称和头像。
+func (s *FriendService) GetFriendList(ctx context.Context, userID int64) ([]FriendListItem, error) {
+	friendships, err := s.mysqlRepo.GetFriendList(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("获取好友列表: %w", err)
+	}
+
+	items := make([]FriendListItem, 0, len(friendships))
+	for _, fs := range friendships {
+		isBlocked, err := s.mysqlRepo.IsBlocked(ctx, userID, fs.FriendID)
+		if err != nil {
+			return nil, fmt.Errorf("获取好友黑名单状态: %w", err)
+		}
+		user, err := s.mysqlRepo.GetUserByID(ctx, fs.FriendID)
+		if err != nil { // 获取好友信息失败
+			s.logger.Warn("获取好友个人资料失败",
+				zap.Int64("friendID", fs.FriendID),
+				zap.Error(err),
+			)
+			// 仍然包含好友关系，只是没有个人资料信息
+			items = append(items, FriendListItem{Friendship: fs, IsBlocked: isBlocked})
+			continue
+		}
+		if user == nil { // 找不到这个好友
+			// 仍然包含好友关系，只是没有个人资料信息
+			items = append(items, FriendListItem{Friendship: fs, IsBlocked: isBlocked})
+			continue
+		}
+		items = append(items, FriendListItem{
+			Friendship: fs,
+			Nickname:   user.Nickname,
+			AvatarURL:  user.AvatarURL,
+			IsBlocked:  isBlocked,
+		})
+	}
+
+	return items, nil
+}
+
+// DeleteFriend 删除两个用户之间的双向好友关系。
+func (s *FriendService) DeleteFriend(ctx context.Context, userID, friendID int64) error {
+	if err := s.mysqlRepo.DeleteFriendship(ctx, userID, friendID); err != nil {
+		return fmt.Errorf("删除好友关系: %w", err)
+	}
+	// s.redisRepo 实现了 DeleteFriendCache 方法，所以它也属于 friendCacheRemover 类型，需要用类型断言转成这个类型
+	if cache, ok := s.redisRepo.(friendCacheRemover); ok {
+		if err := cache.DeleteFriendCache(ctx, userID, friendID); err != nil { // 删除好友缓存失败
+			// MySQL 仍是唯一数据源；既然数据库中的关系已经不存在了，就只记录缓存删除失败日志，而不报告删除失败
+			s.logger.Warn("删除好友缓存失败", zap.Int64("userID", userID), zap.Int64("friendID", friendID), zap.Error(err))
+		}
+	}
+
+	s.logger.Debug("好友已删除",
+		zap.Int64("userID", userID),
+		zap.Int64("friendID", friendID),
+	)
+
+	return nil
+}
+
+// BlockUser 将用户添加到调用者的黑名单中。
+func (s *FriendService) BlockUser(ctx context.Context, userID, blockedID int64) error {
+	// 检查是否已经拉黑
+	isBlocked, err := s.mysqlRepo.IsBlocked(ctx, userID, blockedID)
+	if err != nil {
+		return fmt.Errorf("检查是否已拉黑: %w", err)
+	}
+	if isBlocked {
+		return fmt.Errorf(ErrAlreadyBlocked)
+	}
+
+	bl := &model.Blacklist{
+		UserID:    userID,
+		BlockedID: blockedID,
+	}
+	if err := s.mysqlRepo.CreateBlacklist(ctx, bl); err != nil {
+		return fmt.Errorf("创建黑名单记录: %w", err)
+	}
+
+	s.logger.Debug("用户已拉黑",
+		zap.Int64("userID", userID),
+		zap.Int64("blockedID", blockedID),
+	)
+
+	return nil
+}
+
+// UnblockUser 将用户从调用者的黑名单中移除。
+func (s *FriendService) UnblockUser(ctx context.Context, userID, blockedID int64) error {
+	if err := s.mysqlRepo.DeleteBlacklist(ctx, userID, blockedID); err != nil {
+		return fmt.Errorf("删除黑名单记录: %w", err)
+	}
+
+	s.logger.Debug("用户已取消拉黑",
+		zap.Int64("userID", userID),
+		zap.Int64("blockedID", blockedID),
+	)
+
+	return nil
 }
