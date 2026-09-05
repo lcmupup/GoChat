@@ -65,6 +65,8 @@ func main() {
 	// ── 初始化处理器层 ──
 	authHandler := api.NewAuthHandler(authSvc)
 	friendHandler := api.NewFriendHandler(friendSvc, rdb)
+	uploadHandler := api.NewUploadHandler(cfg.Server.UploadDir, cfg.File.MaxSizeMB, cfg.File.AllowedExts, mysqlRepo)
+	avatarHandler := api.NewAvatarHandler()
 
 	r := gin.Default()
 	// 健康检查
@@ -75,12 +77,20 @@ func main() {
 	// ── 公开路由（无需认证）──
 	public := r.Group("/api/v1")
 	authHandler.RegisterRoutes(public)
+	avatarHandler.RegisterRoutes(public)
 
 	// ── 受保护路由（需要 JWT 认证）──
 	protected := r.Group("/api/v1")
 	protected.Use(middleware.JWTAuthMiddleware(cfg.JWT.Secret))
 	authHandler.RegisterAccountRoutes(protected)
 	friendHandler.RegisterRoutes(protected)
+	uploadHandler.RegisterRoutes(protected)
+
+	// ── 静态文件：上传目录 ──
+	// 将 /uploads 这段URL映射到服务器上的本地文件路径 cfg.Server.UploadDir(假设是 ./data/uploads)，
+	// 用户在浏览器访问 http://lcm.com/uploads/avatars/abc.jpg 时，
+	// 服务器会去读取 ./data/uploads/avatars/abc.jpg 这个文件
+	r.Static("/uploads", cfg.Server.UploadDir)
 
 	logger.Info("服务器启动")
 	err = r.Run(fmt.Sprintf(":%d", cfg.Server.Port))

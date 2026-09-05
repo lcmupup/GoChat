@@ -24,3 +24,8 @@ jwt:
   secret: "gochat-local-development-secret-change-before-production"
   access_exp_hours: 2
   refresh_exp_days: 7
+
+file:
+  max_size_mb: 50
+  allowed_exts: ["jpg", "png", "gif", "mp4"]
+  upload_dir: "./uploads"

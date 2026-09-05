@@ -12,6 +12,7 @@ type Config struct {
 	Redis    RedisConfig    `yaml:"redis"`
 	RabbitMQ RabbitMQConfig `yaml:"rabbitmq"`
 	JWT      JWTConfig      `yaml:"jwt"`
+	File     FileConfig     `yaml:"file"`
 }
 
 type ServerConfig struct {
@@ -43,6 +44,12 @@ type JWTConfig struct {
 	Secret         string `yaml:"secret"`
 	AccessExpHours int    `yaml:"access_exp_hours"`
 	RefreshExpDays int    `yaml:"refresh_exp_days"`
+}
+
+type FileConfig struct {
+	MaxSizeMB   int      `yaml:"max_size_mb"`
+	AllowedExts []string `yaml:"allowed_exts"`
+	UploadDir   string   `yaml:"upload_dir"`
 }
 
 func LoadConfig(path string) (*Config, error) {
