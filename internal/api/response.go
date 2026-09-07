@@ -41,6 +41,18 @@ const (
 	CodeRequestNotFound  = 1205
 	CodeNotRequestTarget = 1206
 	CodeAlreadyBlocked   = 1207
+
+	// ── 群组 1300~1399 ──
+	CodeNotOwnerOrAdmin     = 1301
+	CodeGroupNotFound       = 1302
+	CodeAlreadyMember       = 1303
+	CodeGroupFull           = 1304
+	CodeCannotRemoveOwner   = 1305
+	CodeCannotLeaveAsOwner  = 1306
+	CodeInvalidRole         = 1307
+	CodeMemberNotFriend     = 1308
+	CodeCannotRemovePeer    = 1309
+	CodeGroupMemberNotFound = 1310
 )
 
 // ──────────────────────────────────────────────────────
@@ -66,6 +78,18 @@ var errorCodeMap = map[string]int{
 	"好友请求未找到":         CodeRequestNotFound,
 	"你不是该好友请求的接收者":    CodeNotRequestTarget,
 	"你已经拉黑了该用户":       CodeAlreadyBlocked,
+
+	// 群组
+	"只有群主或管理员才能执行此操作": CodeNotOwnerOrAdmin,
+	"群组不存在":          CodeGroupNotFound,
+	"用户已是群组成员":       CodeAlreadyMember,
+	"群组已满（最多 500 人）": CodeGroupFull,
+	"无法移除群主":         CodeCannotRemoveOwner,
+	"群主无法退出群组；请先转让群主身份或解散群组": CodeCannotLeaveAsOwner,
+	"角色值必须为 0（普通成员）或 1（管理员）": CodeInvalidRole,
+	"只能邀请好友加入群组":             CodeMemberNotFriend,
+	"管理员只能移除普通成员":            CodeCannotRemovePeer,
+	"群成员未找到":                 CodeGroupMemberNotFound,
 }
 
 // MapErrorCode 将 service 层返回的 error 字符串映射为前端错误码。

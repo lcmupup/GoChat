@@ -9,7 +9,7 @@ import (
 
 // MySQLRepo 定义了服务和消费者所需的所有 MySQL CRUD 操作。
 type MySQLRepo interface {
-	// 用户
+	// —— 用户 ——
 	GetUserByID(ctx context.Context, userID int64) (*model.User, error)
 	GetUserByUsername(ctx context.Context, username string) (*model.User, error)
 	CreateUser(ctx context.Context, user *model.User) error
@@ -27,6 +27,15 @@ type MySQLRepo interface {
 	CreateBlacklist(ctx context.Context, bl *model.Blacklist) error
 	DeleteBlacklist(ctx context.Context, userID, blockedID int64) error
 	IsBlocked(ctx context.Context, userID, blockedID int64) (bool, error)
+
+	// ── 群组 ──
+	CreateGroup(ctx context.Context, group *model.Group) (int64, error)
+	UpdateGroup(ctx context.Context, group *model.Group) error
+	GetGroupByID(ctx context.Context, groupID int64) (*model.Group, error)
+	AddGroupMember(ctx context.Context, member *model.GroupMember) error
+	RemoveGroupMember(ctx context.Context, groupID, userID int64) error
+	GetGroupMembers(ctx context.Context, groupID int64) ([]model.GroupMember, error)
+	UpdateGroupMemberRole(ctx context.Context, groupID, userID, role int) error
 }
 
 // MySQLRepoImpl — 基于 database/sql 的具体实现
@@ -38,7 +47,7 @@ func NewMySQLRepo(db *sql.DB) *MySQLRepoImpl {
 	return &MySQLRepoImpl{db}
 }
 
-// 用户
+// —— 用户 ——
 func (m *MySQLRepoImpl) GetUserByID(ctx context.Context, userID int64) (*model.User, error) {
 	query := `SELECT id, username, password_hash, nickname, avatar_url, sign, gender, created_at, updated_at
 	          FROM users WHERE id = ?`
@@ -279,4 +288,106 @@ func (m *MySQLRepoImpl) IsBlocked(ctx context.Context, userID, blockedID int64) 
 		return false, fmt.Errorf("检查是否已拉黑: %w", err)
 	}
 	return count > 0, nil
+}
+
+// ── 群组 ──
+
+func (m *MySQLRepoImpl) CreateGroup(ctx context.Context, group *model.Group) (int64, error) {
+	query := "INSERT INTO `groups` (name, notice, owner_id, max_members, created_at, updated_at) VALUES (?, ?, ?, 500, NOW(), NOW())"
+	result, err := m.db.ExecContext(ctx, query,
+		group.Name,
+		group.Notice,
+		group.OwnerID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("创建群组: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("创建群组 获取最后插入ID: %w", err)
+	}
+	return id, nil
+}
+
+func (m *MySQLRepoImpl) UpdateGroup(ctx context.Context, group *model.Group) error {
+	query := "UPDATE `groups` SET name=?, notice=?, owner_id=?, updated_at=NOW() WHERE id=?"
+	_, err := m.db.ExecContext(ctx, query, group.Name, group.Notice, group.OwnerID, group.ID)
+	if err != nil {
+		return fmt.Errorf("更新群组: %w", err)
+	}
+	return nil
+}
+
+func (m *MySQLRepoImpl) GetGroupByID(ctx context.Context, groupID int64) (*model.Group, error) {
+	query := "SELECT id, name, notice, owner_id, max_members, created_at, updated_at FROM `groups` WHERE id = ?"
+	row := m.db.QueryRowContext(ctx, query, groupID)
+	var g model.Group
+	err := row.Scan(&g.ID, &g.Name, &g.Notice, &g.OwnerID, &g.MaxMembers, &g.CreatedAt, &g.UpdatedAt)
+	if err != nil {
+		// 找不到这个群
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		// 查这个群产生了错误
+		return nil, fmt.Errorf("按ID获取群组: %w", err)
+	}
+	return &g, nil
+}
+
+func (m *MySQLRepoImpl) AddGroupMember(ctx context.Context, member *model.GroupMember) error {
+	query := `INSERT INTO group_members (group_id, user_id, role, muted_until, joined_at)
+	          VALUES (?, ?, ?, ?, NOW())`
+	_, err := m.db.ExecContext(ctx, query,
+		member.GroupID,
+		member.UserID,
+		member.Role,
+		member.MutedUntil,
+	)
+	if err != nil {
+		return fmt.Errorf("添加群成员: %w", err)
+	}
+	return nil
+}
+
+func (m *MySQLRepoImpl) RemoveGroupMember(ctx context.Context, groupID, userID int64) error {
+	query := `DELETE FROM group_members WHERE group_id=? AND user_id=?`
+	_, err := m.db.ExecContext(ctx, query, groupID, userID)
+	if err != nil {
+		return fmt.Errorf("移除群成员: %w", err)
+	}
+	return nil
+}
+
+func (m *MySQLRepoImpl) GetGroupMembers(ctx context.Context, groupID int64) ([]model.GroupMember, error) {
+	query := `SELECT id, group_id, user_id, role, muted_until, joined_at
+	          FROM group_members WHERE group_id = ?`
+	rows, err := m.db.QueryContext(ctx, query, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("获取群成员: %w", err)
+	}
+	defer rows.Close()
+
+	members := make([]model.GroupMember, 0)
+	for rows.Next() {
+		var gm model.GroupMember
+		err := rows.Scan(&gm.ID, &gm.GroupID, &gm.UserID, &gm.Role, &gm.MutedUntil, &gm.JoinedAt)
+		if err != nil {
+			return nil, fmt.Errorf("扫描群成员: %w", err)
+		}
+		members = append(members, gm)
+	}
+	// 检查 rows 是否被正常遍历完毕
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("遍历群成员: %w", err)
+	}
+	return members, nil
+}
+
+func (m *MySQLRepoImpl) UpdateGroupMemberRole(ctx context.Context, groupID, userID, role int) error {
+	query := `UPDATE group_members SET role=? WHERE group_id=? AND user_id=?`
+	_, err := m.db.ExecContext(ctx, query, role, groupID, userID)
+	if err != nil {
+		return fmt.Errorf("更新群成员角色: %w", err)
+	}
+	return nil
 }

@@ -61,10 +61,12 @@ func main() {
 	// ── 初始化服务层 ──
 	authSvc := service.NewAuthService(mysqlRepo, cfg.JWT.Secret, cfg.JWT.AccessExpHours, cfg.JWT.RefreshExpDays)
 	friendSvc := service.NewFriendService(mysqlRepo, redisRepo, logger)
+	groupSvc := service.NewGroupService(mysqlRepo, redisRepo, logger)
 
 	// ── 初始化处理器层 ──
 	authHandler := api.NewAuthHandler(authSvc)
 	friendHandler := api.NewFriendHandler(friendSvc, rdb)
+	groupHandler := api.NewGroupHandler(groupSvc)
 	uploadHandler := api.NewUploadHandler(cfg.Server.UploadDir, cfg.File.MaxSizeMB, cfg.File.AllowedExts, mysqlRepo)
 	avatarHandler := api.NewAvatarHandler()
 
@@ -84,6 +86,7 @@ func main() {
 	protected.Use(middleware.JWTAuthMiddleware(cfg.JWT.Secret))
 	authHandler.RegisterAccountRoutes(protected)
 	friendHandler.RegisterRoutes(protected)
+	groupHandler.RegisterRoutes(protected)
 	uploadHandler.RegisterRoutes(protected)
 
 	// ── 静态文件：上传目录 ──
