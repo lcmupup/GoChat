@@ -15,6 +15,7 @@ type RedisRepo interface {
 	GetGroupMemberships(ctx context.Context, userID int64) ([]int64, error)
 	GetGroupMembers(ctx context.Context, groupID int64) ([]int64, error)
 	AddGroupMemberRedis(ctx context.Context, groupID, userID int64) error
+	RemoveGroupMemberRedis(ctx context.Context, groupID, userID int64) error
 
 	// ── 好友缓存 ──
 	SetFriendCache(ctx context.Context, uidA, uidB int64) error
@@ -98,6 +99,39 @@ func (r *RedisRepoImpl) AddGroupMemberRedis(ctx context.Context, groupID, userID
 	// if err := r.rdb.HSet(ctx, fmt.Sprintf("group_read_pos:%d", userID), convID, strconv.FormatInt(seq, 10)).Err(); err != nil {
 	// 	return fmt.Errorf("初始化群已读游标: %w", err)
 	// }
+	return nil
+}
+
+func (r *RedisRepoImpl) RemoveGroupMemberRedis(ctx context.Context, groupID, userID int64) error {
+	groupKey := fmt.Sprintf("group_members:%d", groupID)
+	userKey := fmt.Sprintf("user_groups:%d", userID)
+	userIDStr := strconv.FormatInt(userID, 10)
+	groupIDStr := strconv.FormatInt(groupID, 10)
+
+	// ToDo
+	// convID := fmt.Sprintf("g_%d", groupID)
+	// convKey := fmt.Sprintf("conv_list:%d", userID)
+	// members, err := r.rdb.ZRange(ctx, convKey, 0, -1).Result()
+	// if err != nil {
+	// 	return fmt.Errorf("读取退群用户会话摘要: %w", err)
+	// }
+
+	pipe := r.rdb.Pipeline()
+	pipe.SRem(ctx, groupKey, userIDStr)
+	pipe.SRem(ctx, userKey, groupIDStr)
+	pipe.HDel(ctx, fmt.Sprintf("group_member_info:%d", groupID), userIDStr)
+	// ToDo
+	// for _, existing := range members {
+	// 	var summary model.ConvSummary
+	// 	if (json.Unmarshal([]byte(existing), &summary) == nil && summary.ConvID == convID) || existing == convID {
+	// 		pipe.ZRem(ctx, convKey, existing)
+	// 	}
+	// }
+	// pipe.HDel(ctx, fmt.Sprintf("unread:%d", userID), convID)
+	// pipe.HDel(ctx, fmt.Sprintf("group_read_pos:%d", userID), convID)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("清理退群用户缓存: %w", err)
+	}
 	return nil
 }
 
