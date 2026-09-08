@@ -43,6 +43,14 @@ type addMemberRequest struct {
 	MemberID int64 `json:"member_id" binding:"required"`
 }
 
+type updateMemberRoleRequest struct {
+	Role *int64 `json:"role" binding:"required"`
+}
+
+type transferOwnerRequest struct {
+	NewOwnerID int64 `json:"new_owner_id" binding:"required"`
+}
+
 // ── Handlers ──
 
 // CreateGroup godoc
@@ -359,6 +367,144 @@ func (h *GroupHandler) LeaveGroup(c *gin.Context) {
 	SuccessMessage(c, "left group")
 }
 
+// GetMembers godoc
+// @Summary      获取群成员列表
+// @Description  获取指定群组的所有成员信息
+// @Tags         群组
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        groupID  path  int64  true  "群组ID"
+// @Success      200  {object}  ApiResponse{data=object}  "查询成功"
+// @Failure      400  {object}  ApiResponse  "参数错误"
+// @Router       /group/{groupID}/members [get]
+// GetMembers handles GET /group/:groupID/members.
+func (h *GroupHandler) GetMembers(c *gin.Context) {
+	groupID, err := strconv.ParseInt(c.Param("groupID"), 10, 64)
+	if err != nil {
+		Error(c, http.StatusBadRequest, CodeInvalidParam, "invalid group_id")
+		return
+	}
+
+	limit := 50
+	offset := 0
+	if l, err := strconv.Atoi(c.DefaultQuery("limit", "50")); err == nil && l > 0 && l <= 100 {
+		limit = l
+	}
+	if o, err := strconv.Atoi(c.DefaultQuery("offset", "0")); err == nil && o >= 0 {
+		offset = o
+	}
+
+	members, err := h.groupSvc.GetMembers(c.Request.Context(), groupID)
+	if err != nil {
+		Error(c, http.StatusInternalServerError, CodeInternalError, "internal error")
+		return
+	}
+
+	total := int64(len(members))
+
+	// Apply offset/limit slicing
+	if offset > len(members) {
+		offset = len(members)
+	}
+	end := offset + limit
+	if end > len(members) {
+		end = len(members)
+	}
+	paged := members[offset:end]
+
+	PaginatedSuccess(c, paged, total, offset, limit)
+}
+
+func (h *GroupHandler) TransferOwnership(c *gin.Context) {
+	groupID, err := strconv.ParseInt(c.Param("groupID"), 10, 64)
+	if err != nil {
+		Error(c, http.StatusBadRequest, CodeInvalidParam, "invalid group_id")
+		return
+	}
+	var req transferOwnerRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Error(c, http.StatusBadRequest, CodeMissingParam, "new_owner_id is required")
+		return
+	}
+	err = h.groupSvc.TransferOwnership(c.Request.Context(), groupID, c.GetInt64("userID"), req.NewOwnerID)
+	if err != nil {
+		switch err.Error() {
+		case service.ErrNotOwnerOrAdmin:
+			ServiceError(c, http.StatusForbidden, err.Error())
+		case service.ErrGroupNotFound, service.ErrMemberNotFound:
+			ServiceError(c, http.StatusNotFound, err.Error())
+		default:
+			Error(c, http.StatusInternalServerError, CodeInternalError, "internal error")
+		}
+		return
+	}
+	SuccessMessage(c, "group ownership transferred")
+}
+
+// UpdateMemberRole godoc
+// @Summary      更新成员角色
+// @Description  更新群组成员角色（普通成员/管理员），仅群主可操作
+// @Tags         群组
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        groupID   path  int64  true  "群组ID"
+// @Param        memberID  path  int64  true  "成员ID"
+// @Param        body      body  updateMemberRoleRequest  true  "角色信息"
+// @Success      200  {object}  ApiResponse  "更新成功"
+// @Failure      400  {object}  ApiResponse  "参数错误"
+// @Failure      403  {object}  ApiResponse  "无权限"
+// @Failure      404  {object}  ApiResponse  "群组不存在"
+// @Router       /group/{groupID}/member/{memberID}/role [put]
+// UpdateMemberRole handles PUT /group/:groupID/member/:memberID/role.
+func (h *GroupHandler) UpdateMemberRole(c *gin.Context) {
+	groupID, err := strconv.ParseInt(c.Param("groupID"), 10, 64)
+	if err != nil {
+		Error(c, http.StatusBadRequest, CodeInvalidParam, "invalid group_id")
+		return
+	}
+
+	memberID, err := strconv.ParseInt(c.Param("memberID"), 10, 64)
+	if err != nil {
+		Error(c, http.StatusBadRequest, CodeInvalidParam, "invalid member_id")
+		return
+	}
+
+	var req updateMemberRoleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Error(c, http.StatusBadRequest, CodeMissingParam, "role is required")
+		return
+	}
+
+	userID := c.GetInt64("userID")
+	if userID == 0 {
+		Error(c, http.StatusUnauthorized, CodeUnauthorized, "unauthorized")
+		return
+	}
+
+	err = h.groupSvc.UpdateMemberRole(c.Request.Context(), groupID, userID, memberID, *req.Role)
+	if err != nil {
+		switch err.Error() {
+		case service.ErrNotOwnerOrAdmin:
+			ServiceError(c, http.StatusForbidden, err.Error())
+		case service.ErrGroupNotFound:
+			ServiceError(c, http.StatusNotFound, err.Error())
+		case service.ErrMemberNotFound:
+			ServiceError(c, http.StatusNotFound, err.Error())
+		case service.ErrCannotRemoveOwner:
+			ServiceError(c, http.StatusForbidden, err.Error())
+		case service.ErrInvalidRole:
+			ServiceError(c, http.StatusBadRequest, err.Error())
+		default:
+			Error(c, http.StatusInternalServerError, CodeInternalError, "internal error")
+		}
+		return
+	}
+
+	SuccessMessage(c, "member role updated")
+}
+
 // RegisterRoutes registers all group HTTP routes on the given Gin router group.
 func (h *GroupHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	g := rg.Group("/group")
@@ -369,4 +515,7 @@ func (h *GroupHandler) RegisterRoutes(rg *gin.RouterGroup) {
 	g.POST("/:groupID/member", h.AddMember)
 	g.DELETE("/:groupID/member/:memberID", h.RemoveMember)
 	g.POST("/:groupID/leave", h.LeaveGroup)
+	g.GET("/:groupID/members", h.GetMembers)
+	g.PUT("/:groupID/owner", h.TransferOwnership)
+	g.PUT("/:groupID/member/:memberID/role", h.UpdateMemberRole)
 }

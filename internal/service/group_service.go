@@ -303,6 +303,131 @@ func (s *GroupService) LeaveGroup(ctx context.Context, groupID, userID int64) er
 	return nil
 }
 
+// GroupMemberListItem 表示群成员列表中显示的每一个成员内容
+type GroupMemberListItem struct {
+	model.GroupMember
+	Username  string `json:"username"`
+	AvatarURL string `json:"avatar_url"`
+}
+
+// GetMembers 返回群组成员列表
+func (s *GroupService) GetMembers(ctx context.Context, groupID int64) ([]GroupMemberListItem, error) {
+	members, err := s.mysqlRepo.GetGroupMembers(ctx, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("get group members: %w", err)
+	}
+	items := make([]GroupMemberListItem, 0, len(members))
+	for _, member := range members {
+		user, err := s.mysqlRepo.GetUserByID(ctx, member.UserID)
+		if err != nil {
+			return nil, fmt.Errorf("get group member profile: %w", err)
+		}
+		item := GroupMemberListItem{GroupMember: member}
+		if user != nil {
+			item.Username = user.Username
+			item.AvatarURL = user.AvatarURL
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+// TransferOwnership 将群主转让给一个群成员
+func (s *GroupService) TransferOwnership(ctx context.Context, groupID, ownerID, newOwnerID int64) error {
+	// 验证群聊是否存在
+	group, err := s.mysqlRepo.GetGroupByID(ctx, groupID)
+	if err != nil {
+		return fmt.Errorf("get group: %w", err)
+	}
+	if group == nil {
+		return fmt.Errorf(ErrGroupNotFound)
+	}
+	// 验证当前的操作者是否为群主
+	if group.OwnerID != ownerID {
+		return fmt.Errorf(ErrNotOwnerOrAdmin)
+	}
+	// 查询所有群成员并验证 newOwnerID 对应的用户是否在群聊中
+	members, err := s.mysqlRepo.GetGroupMembers(ctx, groupID)
+	if err != nil {
+		return fmt.Errorf("get group members: %w", err)
+	}
+	found := false
+	for _, member := range members {
+		if member.UserID == newOwnerID {
+			found = true
+			break
+		}
+	}
+	// 要转让的用户不在群聊中或要转让的用户就是群主自己都返回错误
+	if !found || newOwnerID == ownerID {
+		return fmt.Errorf(ErrMemberNotFound)
+	}
+	// 在数据库层将原群主变为普通成员
+	if err := s.mysqlRepo.UpdateGroupMemberRole(ctx, int(groupID), int(ownerID), 0); err != nil {
+		return fmt.Errorf("demote old owner: %w", err)
+	}
+	// 在数据库层将新群主变为群主
+	if err := s.mysqlRepo.UpdateGroupMemberRole(ctx, int(groupID), int(newOwnerID), 2); err != nil {
+		return fmt.Errorf("promote new owner: %w", err)
+	}
+	// 在数据库层更新群聊的群主信息
+	group.OwnerID = newOwnerID
+	if err := s.mysqlRepo.UpdateGroup(ctx, group); err != nil {
+		return fmt.Errorf("update group owner: %w", err)
+	}
+	return nil
+}
+
+// UpdateMemberRole 更改成员的角色。userID 必须是群主。
+// targetUserID 不能是群主。newRole 必须为 0（普通成员）或 1（管理员）。
+func (s *GroupService) UpdateMemberRole(ctx context.Context, groupID, userID, targetUserID, newRole int64) error {
+	// 验证群聊是否存在
+	group, err := s.mysqlRepo.GetGroupByID(ctx, groupID)
+	if err != nil {
+		return fmt.Errorf("get group: %w", err)
+	}
+	if group == nil {
+		return fmt.Errorf(ErrGroupNotFound)
+	}
+
+	// 只有群主可以更改角色
+	if userID != group.OwnerID {
+		return fmt.Errorf(ErrNotOwnerOrAdmin)
+	}
+
+	// 不能更改群主的角色
+	if targetUserID == group.OwnerID {
+		return fmt.Errorf(ErrCannotRemoveOwner)
+	}
+
+	// 更改的角色值不是普通成员也不是管理员则报错
+	if newRole != 0 && newRole != 1 {
+		return fmt.Errorf(ErrInvalidRole)
+	}
+
+	// 验证要更改角色的这个成员是否在群聊中
+	members, err := s.mysqlRepo.GetGroupMembers(ctx, groupID)
+	if err != nil {
+		return fmt.Errorf("get group members: %w", err)
+	}
+	found := false // 判断targetUserID是否为群成员
+	for _, member := range members {
+		if member.UserID == targetUserID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf(ErrMemberNotFound)
+	}
+
+	// 在数据库层更新群成员的角色信息
+	if err := s.mysqlRepo.UpdateGroupMemberRole(ctx, int(groupID), int(targetUserID), int(newRole)); err != nil {
+		return fmt.Errorf("update member role: %w", err)
+	}
+	return nil
+}
+
 // isOwnerOrAdmin 检查给定的 userID 是否在群组中具有群主（role=2）或管理员（role=1）身份。
 // 如果是则返回 true，否则返回 false。
 func (s *GroupService) isOwnerOrAdmin(ctx context.Context, groupID, userID int64) bool {
